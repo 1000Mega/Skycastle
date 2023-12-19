@@ -21,15 +21,44 @@ public class OrbitCamera : MonoBehaviour
     [SerializeField, Range(-89f, 89f)]
     float minVerticalAngle = -30f, maxVerticalAngle = 60f;
 
+    [SerializeField, Min(0f)]
+    float alignDelay = 5f;
 
-    Vector3 focusPoint;
+    [SerializeField, Range(0f, 90f)]
+    float alignSmoothRange = 45f;
+
+    //For performance reasons or stability, we can use layer masks to ignore small detailed geometry
+    [SerializeField]
+    LayerMask obstructionMask = -1;
+
+    Camera regularCamera;
+
+    Vector3 focusPoint, previousFocusPoint;
 
     Vector2 orbitAngles = new Vector2(45f, 0f);
 
-    //On Section 2.4
+    //https://catlikecoding.com/unity/tutorials/movement/orbit-camera/ 4.2
+    //3D vector for half extends to use for box cast (half dimensions)
+    Vector3 CameraHalfExtends
+    {
+        get {
+            Vector3 halfExtends;
+            halfExtends.y =
+                regularCamera.nearClipPlane *
+                Mathf.Tan(0.5f * Mathf.Deg2Rad * regularCamera.fieldOfView);
+            halfExtends.x = halfExtends.y * regularCamera.aspect;
+            halfExtends.z = 0f;
+            return halfExtends;
+        }
+    }
+
+    //Finished Orbit Camera
+
+    float lastManualRotationTime;
 
     void Awake()
     {
+        regularCamera = GetComponent<Camera>();
         focusPoint = focus.position;
         transform.localRotation = Quaternion.Euler(orbitAngles);
     }
@@ -45,8 +74,8 @@ public class OrbitCamera : MonoBehaviour
     {
         UpdateFocusPoint();
         Quaternion lookRotation;
-        //Only recalculate rotation if there's a change
-        if (ManualRotation())
+        //Only recalculate rotation if there's a change, check manual first
+        if (ManualRotation() || AutomaticRotation())
         {
             ConstrainAngles();
             //Converts orbitAngles Vec2 to Vector3, with Z rotation set to zero
@@ -58,11 +87,33 @@ public class OrbitCamera : MonoBehaviour
         
         Vector3 lookDirection = transform.forward;
         Vector3 lookPosition = focusPoint - lookDirection * distance;
+
+        Vector3 rectOffset = lookDirection * regularCamera.nearClipPlane;
+        Vector3 rectPosition = lookPosition + rectOffset;
+        Vector3 castFrom = focus.position;
+        Vector3 castLine = rectPosition - castFrom;
+        float castDistance = castLine.magnitude;
+        Vector3 castDirection = castLine / castDistance;
+
+
+        //Use cast hit distance to relocate camera if we're hitting something that will block view
+        //Use box cast to make sure camera near plane isn't cutting through geometry
+        //Have a solution for minimal distance?
+        //Half extends = half the box's width, height, and depth
+        if (Physics.BoxCast(
+            castFrom, CameraHalfExtends, castDirection, out RaycastHit hit, 
+            lookRotation, castDistance, obstructionMask)) 
+        {
+            rectPosition = castFrom + castDirection * hit.distance;
+            lookPosition = rectPosition - rectOffset;
+        }
+
         transform.SetPositionAndRotation(lookPosition, lookRotation);
     }
 
     void UpdateFocusPoint()
     {
+        previousFocusPoint = focusPoint;
         Vector3 targetPoint = focus.position;
         if (focusRadius > 0f) 
         {
@@ -95,10 +146,49 @@ public class OrbitCamera : MonoBehaviour
         const float e = 0.001f;
         if (input.x < -e || input.x > e || input.y < -e || input.y > e) {
             orbitAngles += rotationSpeed * Time.unscaledDeltaTime * input;
+            lastManualRotationTime = Time.unscaledTime;
             return true;
         }
         return false;
         //Return whether or not we've changed the angle
+    }
+
+    bool AutomaticRotation()
+    {
+        if (Time.unscaledTime - lastManualRotationTime < alignDelay) {
+            return false;
+        }
+
+        Vector2 movement = new Vector2(
+            focusPoint.x - previousFocusPoint.x,
+            focusPoint.z - previousFocusPoint.z
+            );
+        float movementDeltaSqr = movement.sqrMagnitude;
+        if (movementDeltaSqr < 0.0001f) {
+            return false;
+        }
+        //We already have the squared magnitude so it's more efficient to normalize ourselves
+        float headingAngle = GetAngle(movement / Mathf.Sqrt(movementDeltaSqr));
+        float deltaAbs = Mathf.Abs(Mathf.DeltaAngle(orbitAngles.y, headingAngle));
+        float rotationChange = 
+            rotationSpeed * Mathf.Min(Time.unscaledDeltaTime, movementDeltaSqr);
+        //Within a certain range we do not adjust at full rotation speed
+        if (deltaAbs < alignSmoothRange) { 
+            rotationChange *= deltaAbs / alignSmoothRange;
+        }
+        else if (180f - deltaAbs < alignSmoothRange) {
+            rotationChange *= (180f - deltaAbs) / alignSmoothRange;
+        }
+        orbitAngles.y =
+            Mathf.MoveTowardsAngle(orbitAngles.y, headingAngle, rotationChange);
+        return true;
+    }
+
+    static float GetAngle(Vector2 direction)
+    {
+        float angle = Mathf.Acos(direction.y) * Mathf.Rad2Deg;
+        //If x is negative, angle is counterclockwise and we subtract from 360
+        return direction.x < 0f ? 360f - angle : angle;
     }
 
     void ConstrainAngles()

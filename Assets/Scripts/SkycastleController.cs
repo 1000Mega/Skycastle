@@ -28,6 +28,9 @@ public class SkycastleController : MonoBehaviour
     [SerializeField]
     LayerMask probeMask = -1, stairsMask = -1;
 
+    [SerializeField]
+    Transform playerInputSpace = default;
+
     Vector3 vel, desiredVel;
     Vector3 contactNormal, steepNormal;
 
@@ -61,9 +64,24 @@ public class SkycastleController : MonoBehaviour
         //Use the OR operator here to make sure it doesn't get set back to false unless we set it
         tryJump |= Input.GetButtonDown("Jump");
 
-        desiredVel =
+        //Movement input relative to camera
+        if (playerInputSpace) {
+            //Discard Y components and normalize so that vertical camera angle does not influence forward speed
+            Vector3 forward = playerInputSpace.forward;
+            forward.y = 0f;
+            forward.Normalize();
+            Vector3 right = playerInputSpace.right;
+            right.y = 0f;
+            right.Normalize();
+
+            desiredVel = 
+                (forward * playerInput.y + right * playerInput.x) * maxSpeed;
+        }
+        else { //Otherwise use world space as normal
+            desiredVel =
             new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
-        //vel += desiredVel * Time.deltaTime;
+            //vel += desiredVel * Time.deltaTime;
+        }
 
         //White when in air
         GetComponent<Renderer>().material.SetColor(
